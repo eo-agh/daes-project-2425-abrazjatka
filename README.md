@@ -27,6 +27,7 @@ url: https://cds.climate.copernicus.eu/api
 key: YourAPIToken
 ```
 5. Save file as: .cdsapirc
+   
 *For instructions on how to create a dot file on Windows, please see here or check the instructions here: https://gist.github.com/ozh/4131243
 
 
