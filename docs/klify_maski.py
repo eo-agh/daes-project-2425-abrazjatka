@@ -21,6 +21,7 @@ from shapely.geometry import shape
 from rasterio.transform import from_origin, rowcol, from_bounds
 import tempfile
 import json
+import math
 
 # Połączenie z publicznym katalogiem STAC na Azure Planetary Computer
 @st.cache_resource
@@ -56,10 +57,25 @@ def reproject_array(array, src_crs, dst_crs, src_transform):
 
 @st.cache_data(show_spinner=True)
 def process_data_and_differences(cords, years):
+    lat_center = cords[0]
+    lon_center = cords[1]
+
+    half_side_km = 10
+
+    lat_deg_per_km = 1 / 111
+    lon_deg_per_km = 1 / (111 * math.cos(math.radians(lat_center)))
+
+    delta_lat = half_side_km * lat_deg_per_km
+    delta_lon = half_side_km * lon_deg_per_km
+
     aoi = {
         "type": "Polygon",
         "coordinates": [[
-            [cords[1]-0.1, cords[0]-0.1], [cords[1]+0.05, cords[0]-0.1], [cords[1]+0.05, cords[0]+0.1], [cords[1]-0.1, cords[0]+0.1], [cords[1]-0.1, cords[0]-0.1]
+            [lon_center - delta_lon, lat_center - delta_lat],
+            [lon_center + delta_lon, lat_center - delta_lat],
+            [lon_center + delta_lon, lat_center + delta_lat],
+            [lon_center - delta_lon, lat_center + delta_lat],
+            [lon_center - delta_lon, lat_center - delta_lat]
         ]]
     }
 
