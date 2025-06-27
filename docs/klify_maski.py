@@ -148,7 +148,7 @@ def process_data_and_differences(cords, years):
     water_mask_filtered_by_year = {}
     for year in years_sorted:
         if year in vh_medians_by_year:
-            water_mask = (vh_medians_by_year.get(year) < 0.007)
+            water_mask = (vh_medians_by_year.get(year) < 0.008)
             water_mask_filtered = median_filter(water_mask.astype(np.uint8), size=3)
             water_mask_filtered_by_year[year] = water_mask_filtered
             st.write(f"Zrobiono maskę wody dla roku {year}")
