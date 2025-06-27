@@ -139,33 +139,31 @@ def process_data_and_differences(cords, years):
         else:
             st.warning(f"Brak danych VH dla roku {year}, pomijam generowanie maski wody.")
 
-    if vh_stack:
-        height, width = vh_stack[0].shape
-    else:
-        st.error("Brak danych VH do określenia granic.")
-        return None, None, None, None, None, None, None
-
-    left, top = red_transform_global * (0, 0)
-    right, bottom = red_transform_global * (width, height)
-    bounds = transform_bounds(vh_ds_crs, 'EPSG:4326', left, bottom, right, top)
+    dataset_crs = vh_ds.crs
+    height, width = vh.shape
+    left, top = red_transform * (0, 0)
+    right, bottom = red_transform * (width, height)
+    bounds = transform_bounds(dataset_crs, 'EPSG:4326', left, bottom, right, top)
 
     water_mask_reprojected_by_year = {}
     for year in years_sorted:
         if year in water_mask_filtered_by_year:
-            water_mask_reprojected, _ = reproject_array(water_mask_filtered_by_year.get(year), vh_ds_crs, 'EPSG:4326', red_transform_global)
+            water_mask_reprojected, _ = reproject_array(water_mask_filtered_by_year.get(year), dataset_crs, 'EPSG:4326', red_transform)
             water_mask_reprojected_by_year[year] = water_mask_reprojected
             st.write(f"Zmieniono uklad wspulzednych dla roku: {year}")
 
     if water_mask_reprojected_by_year:
-        sample_mask = next(iter(water_mask_reprojected_by_year.values()))
-        height_reproj, width_reproj = sample_mask.shape
-        transform_water = from_bounds(aoi_minx, aoi_miny, aoi_maxx, aoi_maxy, width_reproj, height_reproj) # Use AOI bounds directly for target transform
+        last_year = sorted(water_mask_reprojected_by_year.keys())[-1]
+        sample_mask = water_mask_reprojected_by_year[last_year]
+        minx, miny, maxx, maxy = bounds
+        height, width = sample_mask.shape
     else:
         st.error("Brak reprojekcji masek wodnych do określenia transformacji.")
         return None, None, None, None, None, None, None
 
-    row_start, col_start = rowcol(transform_water, aoi_minx, aoi_maxy)
-    row_stop, col_stop = rowcol(transform_water, aoi_maxx, aoi_miny)
+    transform_water = from_bounds(minx, miny, maxx, maxy, width, height)
+    row_start, col_start = rowcol(transform_water , aoi_minx, aoi_maxy)
+    row_stop, col_stop = rowcol(transform_water , aoi_maxx, aoi_miny)
 
     row_start, row_stop = sorted([row_start, row_stop])
     col_start, col_stop = sorted([col_start, col_stop])
