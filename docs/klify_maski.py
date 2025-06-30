@@ -22,6 +22,7 @@ from rasterio.transform import from_origin, rowcol, from_bounds
 import tempfile
 import json
 import math
+from affine import Affine
 
 # Połączenie z publicznym katalogiem STAC na Azure Planetary Computer
 @st.cache_resource
@@ -86,6 +87,8 @@ def process_data_and_differences(cords, years):
     vh_medians_by_year = {}
     vh_ds_crs = None
     red_transform_global = None
+    transform_treshold = Affine(10.0, 0.0, 289640.00,
+                   0.0, -10.0, 5983810.00)
 
     # Sort years to ensure consistent comparison order
     years_sorted = sorted(years)
@@ -115,16 +118,22 @@ def process_data_and_differences(cords, years):
                     if vh_ds_crs is None:
                         vh_ds_crs = vh_ds.crs
                     vh, red_transform = clip_raster(vh_ds, aoi)
-                    if red_transform_global is None:
-                        red_transform_global = red_transform
                     vh = np.where(vh == -32768, np.nan, vh).astype(np.float32)
 
-                if not vh_stack:
+                    x1 = red_transform.c
+
+                    x2 = transform_treshold.c
+
+                result = str(int(x1))[0] == str(int(x2))[0] == '2'
+
+                if not vh_stack and result:
                     vh_stack.append(vh)
-                elif vh.shape == vh_stack[0].shape:
+                    red_transform_global = red_transform
+                elif vh.shape == vh_stack[0].shape and result:
                     vh_stack.append(vh)
+                    red_transform_global = red_transform
                 else:
-                    st.warning(f"Pominięto scenę o innym wymiarze: {item.id}")
+                    st.warning(f"Pominięto scenę o innym wymiarze lub transform: {item.id}")
 
             except Exception as e:
                 st.error(f"Błąd w scenie {item.id}: {e}")
@@ -157,14 +166,14 @@ def process_data_and_differences(cords, years):
 
     dataset_crs = vh_ds.crs
     height, width = vh.shape
-    left, top = red_transform * (0, 0)
-    right, bottom = red_transform * (width, height)
+    left, top = red_transform_global * (0, 0)
+    right, bottom = red_transform_global * (width, height)
     bounds = transform_bounds(dataset_crs, 'EPSG:4326', left, bottom, right, top)
 
     water_mask_reprojected_by_year = {}
     for year in years_sorted:
         if year in water_mask_filtered_by_year:
-            water_mask_reprojected, _ = reproject_array(water_mask_filtered_by_year.get(year), dataset_crs, 'EPSG:4326', red_transform)
+            water_mask_reprojected, _ = reproject_array(water_mask_filtered_by_year.get(year), dataset_crs, 'EPSG:4326', red_transform_global)
             water_mask_reprojected_by_year[year] = water_mask_reprojected
             st.write(f"Zmieniono uklad wspulzednych dla roku: {year}")
 
