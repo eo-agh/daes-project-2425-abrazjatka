@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
+import os
+import pyproj
+
+# Ustaw poprawną ścieżkę do bazy proj.db z pakietu pyproj
+os.environ["PROJ_DATA"] = pyproj.datadir.get_data_dir()
+
 
 import streamlit as st
 import pystac_client
@@ -24,6 +30,8 @@ import json
 import math
 from affine import Affine
 
+import folium.plugins
+
 # Połączenie z publicznym katalogiem STAC na Azure Planetary Computer
 @st.cache_resource
 def get_stac_client():
@@ -31,6 +39,35 @@ def get_stac_client():
     return pystac_client.Client.open(stac_url)
 
 stac_client = get_stac_client()
+
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] {
+        min-width: 400px;
+        max-width: 400px;
+    }
+    .header-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .app-title {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-left: 1rem;
+        }
+         [data-testid="stSidebar"] {
+        padding-top: 0rem;
+    }
+    </style>
+    <div class="header-container">
+        <div class="app-title">🌊 Detekcja zmian wód z Sentinel-1</div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # Funkcje pomocnicze
 def clip_raster(dataset, aoi):
@@ -272,15 +309,81 @@ def generate_difference_image_overlays(water_mask_differences):
         st.write(f"Dodano warstwę dla różnicy: {diff_label}")
     return image_colored_paths_by_diff
 
+
+
 # Streamlit UI
-st.title("Detekcja Wody z Sentinel-1 RTC - Analiza Zmian")
+#st.title("Detekcja Wody z Sentinel-1 RTC - Analiza Zmian")
 
 st.sidebar.header("Ustawienia Obszaru Zainteresowania (AOI)")
 default_lat = 53.87
 default_lon = -0.04
-latitude = st.sidebar.number_input("Szerokość geograficzna (Lat)", value=default_lat, format="%.2f")
-longitude = st.sidebar.number_input("Długość geograficzna (Lon)", value=default_lon, format="%.2f")
-cords_input = [latitude, longitude]
+
+from streamlit_folium import st_folium
+import folium.plugins
+
+st.sidebar.markdown("### 🌍 Przykładowe lokalizacje")
+
+locations = {
+    "Luizjana (USA, delta Missisipi)": {"coords": (29.17, -89.31)},
+    "Étretat (Francja, klify)": {"coords": (49.70, 0.19)},
+}
+
+# Gotowe lokalizacje
+for name, info in locations.items():
+    with st.sidebar.expander(name):
+        lat, lon = info["coords"]
+        m = folium.Map(location=[lat, lon], zoom_start=8)
+        folium.Marker([lat, lon], tooltip=name).add_to(m)
+        st.components.v1.html(m._repr_html_(), height=200)
+        if st.button(f"📍 Ustaw lokalizację: {name}"):
+            st.session_state["latitude"] = lat
+            st.session_state["longitude"] = lon
+
+# Nowy tryb: samodzielny wybór z mapy
+with st.sidebar.expander("🖱️ Wybierz własny obszar z mapy"):
+    draw_map = folium.Map(location=[45, 0], zoom_start=3)
+    draw = folium.plugins.Draw(
+        draw_options={"rectangle": True, "polygon": False, "circle": False, "marker": False, "circlemarker": False},
+        edit_options={"edit": False}
+    )
+    draw.add_to(draw_map)
+
+    result = st_folium(draw_map, height=300, width=400)
+
+    if result and "last_active_drawing" in result and result["last_active_drawing"]:
+        geo = result["last_active_drawing"]["geometry"]
+        coords = geo["coordinates"][0]
+        lats = [c[1] for c in coords]
+        lons = [c[0] for c in coords]
+
+        # Środek zaznaczonego prostokąta
+        lat_center = np.mean(lats)
+        lon_center = np.mean(lons)
+
+        st.session_state["latitude"] = lat_center
+        st.session_state["longitude"] = lon_center
+
+        st.success(f"✅ Wybrano obszar: ({lat_center:.4f}, {lon_center:.4f})")
+
+#st.sidebar.header("🧭 Ustawienia Obszaru Zainteresowania (AOI)")
+
+# Domyślnie puste (jeśli nie ustawiono wcześniej)
+default_lat = st.session_state.get("latitude", "")
+default_lon = st.session_state.get("longitude", "")
+
+# Używamy text_input zamiast number_input, by umożliwić puste pola
+lat_input = st.sidebar.text_input("Szerokość geograficzna (Lat)", value=default_lat)
+lon_input = st.sidebar.text_input("Długość geograficzna (Lon)", value=default_lon)
+
+# Walidacja i konwersja do float
+try:
+    latitude = float(lat_input)
+    longitude = float(lon_input)
+    cords_input = [latitude, longitude]
+except ValueError:
+    cords_input = None
+    st.sidebar.warning("Proszę podać poprawne liczby dla szerokości i długości geograficznej.")
+
 
 st.sidebar.header("Wybór Lat")
 selected_years = st.sidebar.multiselect(
@@ -324,5 +427,27 @@ if st.sidebar.button("Generuj mapę zmian"):
 
                 map_html = m._repr_html_()
                 st.components.v1.html(map_html, height=700)
-            else:
-                st.error("Nie udało się wygenerować mapy zmian. Upewnij się, że wybrano co najmniej dwa lata i dane są dostępne dla wszystkich wybranych lat.")
+
+                import zipfile
+
+                if image_colored_paths_by_diff:
+                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+                        with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
+                            for label, img_path in image_colored_paths_by_diff.items():
+                                arcname = f"{label}.png"
+                                zipf.write(img_path, arcname=arcname)
+
+                    with open(tmp_zip.name, "rb") as f:
+                        with st.sidebar:  # <- UMIESZCZAMY PRZYCISK W SIDEBARZE
+                            st.markdown("---")
+                            st.subheader("📦 Eksport zmian wodnych")
+                            st.download_button(
+                                label="📥 Pobierz wszystkie obrazy zmian (ZIP)",
+                                data=f,
+                                file_name="zmiany_wodne.zip",
+                                mime="application/zip"
+                            )
+
+                else:
+                    st.error(
+                        "Nie udało się wygenerować mapy zmian. Upewnij się, że wybrano co najmniej dwa lata i dane są dostępne dla wszystkich wybranych lat.")
