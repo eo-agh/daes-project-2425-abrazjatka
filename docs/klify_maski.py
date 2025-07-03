@@ -28,6 +28,8 @@ import zipfile
 from pyproj import Geod
 from folium.plugins import Draw
 from streamlit_folium import st_folium
+from folium.plugins import HeatMap
+import plotly.graph_objects as go
 
 
 
@@ -195,7 +197,7 @@ def process_data_and_differences(cords, years):
     for year in years_sorted:
         if year in vh_medians_by_year:
             water_mask = (vh_medians_by_year.get(year) < 0.008)
-            water_mask_filtered = median_filter(water_mask.astype(np.uint8), size=3)
+            water_mask_filtered = median_filter(water_mask.astype(np.uint8), size=6)
             water_mask_filtered_by_year[year] = water_mask_filtered
             # st.write(f"Zrobiono maskę wody dla roku {year}")
         # else:
@@ -270,7 +272,7 @@ def process_data_and_differences(cords, years):
                 difference_mask = np.zeros_like(mask1, dtype=np.int8)
                 difference_mask[(mask1 == 0) & (mask2 == 1)] = 1  # New water
                 difference_mask[(mask1 == 1) & (mask2 == 0)] = -1 # Lost water
-                water_mask_differences[f"{year2}-{year1}"] = difference_mask
+                water_mask_differences[f"{year1}-{year2}"] = difference_mask
             #     st.success(f"✅ Obliczono różnicę między {year1} a {year2}")
             # else:
             #     st.warning(f"Brak przyciętych masek dla lat {year1} lub {year2}. Pomijam obliczanie różnicy.")
@@ -304,42 +306,101 @@ def generate_difference_image_overlays(water_mask_differences):
     return image_colored_paths_by_diff
 
 
-def compute_land_area_changes(diff_mask, transform, source_crs="EPSG:32616"):
+
+def compute_land_area_changes(diff_masks, transform, source_crs="EPSG:32616"):
     geod = Geod(ellps="WGS84")
     transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
+    
+    def process_single_mask(diff_mask):
+        results = {}
+        for value, label in [(-1, "lost_water"), (1, "new_water")]:
+            rows, cols = np.where(diff_mask == value)
+            total_area = 0.0
 
-    results = {}
+            for row, col in zip(rows, cols):
+                x_left, y_top = transform * (col, row)
+                x_right, y_bottom = transform * (col + 1, row + 1)
 
-    for value, label in [(-1, "lost_water"), (1, "new_water")]:
-        rows, cols = np.where(diff_mask == value)
-        total_area = 0.0
+                lon_left, lat_top = transformer.transform(x_left, y_top)
+                lon_right, lat_bottom = transformer.transform(x_right, y_bottom)
 
-        for row, col in zip(rows, cols):
-            x_left, y_top = transform * (col, row)
-            x_right, y_bottom = transform * (col + 1, row + 1)
+                lons = [lon_left, lon_right, lon_right, lon_left]
+                lats = [lat_top, lat_top, lat_bottom, lat_bottom]
 
-            lon_left, lat_top = transformer.transform(x_left, y_top)
-            lon_right, lat_bottom = transformer.transform(x_right, y_bottom)
+                if any(np.isnan(lons)) or any(np.isnan(lats)):
+                    raise ValueError("NaN in transformed coordinates!")
 
-            lons = [lon_left, lon_right, lon_right, lon_left]
-            lats = [lat_top, lat_top, lat_bottom, lat_bottom]
+                area, _ = geod.polygon_area_perimeter(lons, lats)
+                total_area += abs(area)
 
-            if any(np.isnan(lons)) or any(np.isnan(lats)):
-                raise ValueError("NaN in transformed coordinates!")
+            count_pixels = len(rows)
+            results[label] = {
+                "area_m2": total_area,
+                "area_ha": total_area / 10_000,
+                "area_km2": total_area / 1_000_000,
+                "num_pixels": count_pixels
+            }
+        return results
 
-            area, _ = geod.polygon_area_perimeter(lons, lats)
-            total_area += abs(area)
+    if isinstance(diff_masks, dict):
+        all_results = {}
+        for period_name, mask in diff_masks.items():
+            all_results[period_name] = process_single_mask(mask)
+        return all_results
+    else:
+        return process_single_mask(diff_masks)
+    
 
-        count_pixels = len(rows)
+def create_land_change_plot(change_data):
+    periods = list(change_data.keys())
+    lost = [change_data[period]['lost_water']['area_km2'] for period in periods]
+    new = [change_data[period]['new_water']['area_km2'] for period in periods]
 
-        results[label] = {
-            "area_m2": total_area,
-            "area_ha": total_area / 10_000,
-            "area_km2": total_area / 1_000_000,
-            "num_pixels": count_pixels
-        }
+    fig = go.Figure()
 
-    return results
+    fig.add_trace(go.Bar(
+        x=periods,
+        y=lost,
+        name='Odsłonięty ląd (km²)',
+        marker_color='red'
+    ))
+    fig.add_trace(go.Bar(
+        x=periods,
+        y=new,
+        name='Utracony ląd (km²)',
+        marker_color='blue'
+    ))
+    fig.update_layout(
+        title='Zmiany powierzchni lądowej',
+        xaxis_title='Okres',
+        yaxis_title='Powierzchnia (km²)',
+        barmode='group'
+    )
+
+    return fig
+
+
+def generate_heatmap_data(mask: np.ndarray, transform: Affine, with_weights: bool = False):
+
+    rows, cols = np.where(mask != 0)
+
+    if rows.size == 0:
+        return []  # brak punktów
+
+    lons = []
+    lats = []
+    for row, col in zip(rows, cols):
+        lon, lat = transform * (col, row)
+        lons.append(lon)
+        lats.append(lat)
+
+    if with_weights:
+        weights = mask[rows, cols].astype(float)
+        heat_data = list(zip(lats, lons, weights))
+    else:
+        heat_data = list(zip(lats, lons))
+
+    return heat_data
 
 
 
@@ -351,7 +412,8 @@ st.sidebar.header("Ustawienia Obszaru Zainteresowania (AOI)")
 locations = {
     "Luizjana (USA, delta Missisipi)": {"coords": (29.17, -89.31)},
     "Étretat (Francja, klify)": {"coords": (49.70, 0.19)},
-    "Jezioro Aralskie (Kazachstan / Uzbekistan)": {"coords": (59.436, 45.461)},
+    "Jezioro Aralskie (Kazachstan / Uzbekistan)": {"coords": (46, 59.2)},
+    'Anglia (GB, klify)':{'coords': (53.87, -0.04)},
 }
 
 for name, info in locations.items():
@@ -415,6 +477,7 @@ if st.sidebar.button("Generuj mapę zmian"):
                 image_colored_paths_by_diff = generate_difference_image_overlays(water_mask_differences)
                 
                 st.session_state['map_ready'] = True
+                st.session_state['water_mask_differences'] = water_mask_differences
                 st.session_state['image_paths'] = image_colored_paths_by_diff
                 st.session_state['aoi_bounds'] = (aoi_minx, aoi_miny, aoi_maxx, aoi_maxy)
                 st.session_state['red_transform'] = red_transform_global
@@ -425,9 +488,13 @@ if st.sidebar.button("Generuj mapę zmian"):
 if st.session_state.get('map_ready'):
     aoi_minx, aoi_miny, aoi_maxx, aoi_maxy = st.session_state['aoi_bounds']
     image_colored_paths_by_diff = st.session_state['image_paths']
+    red_transform_global = st.session_state['red_transform']
+    water_mask_differences = st.session_state['water_mask_differences']
 
-    # land_area_changes = compute_land_area_changes(water_mask_differences, red_transform_global)
-    # print(f"Zmiany powierzchni lądowej: {land_area_changes}")
+    land_area_changes = compute_land_area_changes(water_mask_differences, red_transform_global)
+    print(f"Zmiany powierzchni lądowej: {land_area_changes}") #to do debugowania
+
+    fig = create_land_change_plot(land_area_changes)
 
     m = folium.Map(location=[(aoi_miny + aoi_maxy) / 2, (aoi_minx + aoi_maxx) / 2], zoom_start=12)
 
@@ -473,6 +540,7 @@ if st.session_state.get('map_ready'):
     full_map_html = m.get_root().render()
     st.components.v1.html(full_map_html, height=700, scrolling=False)
 
+    st.plotly_chart(fig, use_container_width=True)
 
     if st.button("Wyczyść mapę zmian"):
         st.session_state['map_ready'] = False
@@ -480,10 +548,10 @@ if st.session_state.get('map_ready'):
         st.session_state.pop('aoi_bounds', None)
 
 
+
+
     #opcja eksportu obrazu w formie pliku zip
     if image_colored_paths_by_diff:
-        import tempfile
-        import zipfile
         with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
             with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
                 for label, img_path in image_colored_paths_by_diff.items():
