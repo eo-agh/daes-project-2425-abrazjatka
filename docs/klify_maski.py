@@ -3,7 +3,6 @@
 import os
 import pyproj
 
-# Ustaw poprawną ścieżkę do bazy proj.db z pakietu pyproj
 os.environ["PROJ_DATA"] = pyproj.datadir.get_data_dir()
 
 
@@ -14,25 +13,27 @@ import rasterio
 import numpy as np
 import folium
 from folium.raster_layers import ImageOverlay
-import matplotlib.pyplot as plt
 from PIL import Image
 from rasterio.mask import mask
 from rasterio.warp import transform_geom, transform_bounds, calculate_default_transform, reproject, Resampling
-import matplotlib.colors as mcolors
-import io
-import base64
-from tqdm import tqdm
 from scipy.ndimage import median_filter
 from shapely.geometry import shape
-from rasterio.transform import from_origin, rowcol, from_bounds
+from rasterio.transform import rowcol, from_bounds
 import tempfile
 import json
 import math
 from affine import Affine
+from pyproj import Transformer, Geod
+import zipfile
+from pyproj import Geod
+from folium.plugins import Draw
+from streamlit_folium import st_folium
 
-import folium.plugins
 
-# Połączenie z publicznym katalogiem STAC na Azure Planetary Computer
+
+st.set_page_config(page_title='Abrazjątka', page_icon='🌊', layout='wide')
+
+
 @st.cache_resource
 def get_stac_client():
     stac_url = "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -62,7 +63,7 @@ st.markdown(
     }
     </style>
     <div class="header-container">
-        <div class="app-title">🌊 Detekcja zmian wód z Sentinel-1</div>
+        <div class="app-title">Detekcja zmian powierzchni lądowej z Sentinel-1</div>
     </div>
     """,
     unsafe_allow_html=True
@@ -131,7 +132,6 @@ def process_data_and_differences(cords, years):
     years_sorted = sorted(years)
 
     for year in years_sorted:
-        st.write(f"🔍 Przetwarzanie roku {year}")
         time_range = f"{year}-06-01/{year}-08-01"
 
         search = stac_client.search(
@@ -140,7 +140,7 @@ def process_data_and_differences(cords, years):
             datetime=time_range,
         )
         items = list(search.items())
-        st.write(f"Znaleziono {len(items)} scen dla roku {year}")
+        # st.write(f"Znaleziono {len(items)} scen dla roku {year}")
 
         vh_stack = []
 
@@ -169,11 +169,11 @@ def process_data_and_differences(cords, years):
                 elif vh.shape == vh_stack[0].shape and result:
                     vh_stack.append(vh)
                     red_transform_global = red_transform
-                else:
-                    st.warning(f"Pominięto scenę o innym wymiarze lub transform: {item.id}")
+                # else:
+                #     st.warning(f"Pominięto scenę o innym wymiarze lub transform: {item.id}")
 
             except Exception as e:
-                st.error(f"Błąd w scenie {item.id}: {e}")
+                # st.error(f"Błąd w scenie {item.id}: {e}")
                 continue
             finally:
                 my_bar.progress((i + 1) / len(items), text=progress_text)
@@ -183,9 +183,9 @@ def process_data_and_differences(cords, years):
             vh_array = np.stack(vh_stack)
             vh_median = np.nanmedian(vh_array, axis=0)
             vh_medians_by_year[year] = vh_median
-            st.success(f"✅ Obliczono medianę dla roku {year}")
-        else:
-            st.warning(f"⚠️ Brak poprawnych danych dla roku {year}")
+            # st.success(f"✅ Obliczono medianę dla roku {year}")
+        # else:
+            # st.warning(f"⚠️ Brak poprawnych danych dla roku {year}")
 
     if vh_ds_crs is None or red_transform_global is None:
         st.error("Nie udało się przetworzyć żadnych danych. Sprawdź obszar zainteresowania i lata.")
@@ -197,9 +197,9 @@ def process_data_and_differences(cords, years):
             water_mask = (vh_medians_by_year.get(year) < 0.008)
             water_mask_filtered = median_filter(water_mask.astype(np.uint8), size=3)
             water_mask_filtered_by_year[year] = water_mask_filtered
-            st.write(f"Zrobiono maskę wody dla roku {year}")
-        else:
-            st.warning(f"Brak danych VH dla roku {year}, pomijam generowanie maski wody.")
+            # st.write(f"Zrobiono maskę wody dla roku {year}")
+        # else:
+            # st.warning(f"Brak danych VH dla roku {year}, pomijam generowanie maski wody.")
 
     dataset_crs = vh_ds.crs
     height, width = vh.shape
@@ -212,7 +212,7 @@ def process_data_and_differences(cords, years):
         if year in water_mask_filtered_by_year:
             water_mask_reprojected, _ = reproject_array(water_mask_filtered_by_year.get(year), dataset_crs, 'EPSG:4326', red_transform_global)
             water_mask_reprojected_by_year[year] = water_mask_reprojected
-            st.write(f"Zmieniono uklad wspulzednych dla roku: {year}")
+            # st.write(f"Zmieniono uklad wspulzednych dla roku: {year}")
 
     if water_mask_reprojected_by_year:
         last_year = sorted(water_mask_reprojected_by_year.keys())[-1]
@@ -220,7 +220,7 @@ def process_data_and_differences(cords, years):
         minx, miny, maxx, maxy = bounds
         height, width = sample_mask.shape
     else:
-        st.error("Brak reprojekcji masek wodnych do określenia transformacji.")
+        # st.error("Brak reprojekcji masek wodnych do określenia transformacji.")
         return None, None, None, None, None, None, None
 
     transform_water = from_bounds(minx, miny, maxx, maxy, width, height)
@@ -239,18 +239,16 @@ def process_data_and_differences(cords, years):
             col_start_clip = max(0, col_start)
             col_stop_clip = min(water_mask_clipped.shape[1], col_stop)
 
-            # Ensure the clipped mask has content
             if row_stop_clip > row_start_clip and col_stop_clip > col_start_clip:
                 water_mask_clipped = water_mask_clipped[row_start_clip:row_stop_clip, col_start_clip:col_stop_clip]
                 water_mask_clipped_by_year[year] = water_mask_clipped
-                st.write(f"Przyciąto maskę dla roku: {year}")
+                # st.write(f"Przyciąto maskę dla roku: {year}")
             else:
-                st.warning(f"Przycięta maska dla roku {year} jest pusta lub ma niewłaściwe wymiary.")
-                water_mask_clipped_by_year[year] = np.zeros((1,1)) # Placeholder to avoid errors
-        else:
-            st.warning(f"Brak reprojekcji maski wody dla roku {year}, pomijam przycinanie.")
+                # st.warning(f"Przycięta maska dla roku {year} jest pusta lub ma niewłaściwe wymiary.")
+                water_mask_clipped_by_year[year] = np.zeros((1,1)) 
+        # else:
+        #     st.warning(f"Brak reprojekcji maski wody dla roku {year}, pomijam przycinanie.")
 
-    # Calculate differences between consecutive years
     water_mask_differences = {}
     if len(years_sorted) > 1:
         for i in range(len(years_sorted) - 1):
@@ -261,9 +259,8 @@ def process_data_and_differences(cords, years):
                 mask1 = water_mask_clipped_by_year[year1]
                 mask2 = water_mask_clipped_by_year[year2]
 
-                # Ensure masks have the same shape for comparison
                 if mask1.shape != mask2.shape:
-                    st.warning(f"Maski dla lat {year1} i {year2} mają różne wymiary. Nie można obliczyć różnicy.")
+                    # st.warning(f"Maski dla lat {year1} i {year2} mają różne wymiary. Nie można obliczyć różnicy.")
                     continue
 
                 # Calculate difference:
@@ -274,180 +271,290 @@ def process_data_and_differences(cords, years):
                 difference_mask[(mask1 == 0) & (mask2 == 1)] = 1  # New water
                 difference_mask[(mask1 == 1) & (mask2 == 0)] = -1 # Lost water
                 water_mask_differences[f"{year2}-{year1}"] = difference_mask
-                st.success(f"✅ Obliczono różnicę między {year1} a {year2}")
-            else:
-                st.warning(f"Brak przyciętych masek dla lat {year1} lub {year2}. Pomijam obliczanie różnicy.")
+            #     st.success(f"✅ Obliczono różnicę między {year1} a {year2}")
+            # else:
+            #     st.warning(f"Brak przyciętych masek dla lat {year1} lub {year2}. Pomijam obliczanie różnicy.")
 
 
-    return water_mask_clipped_by_year, water_mask_differences, bounds, aoi_minx, aoi_miny, aoi_maxx, aoi_maxy
+    return water_mask_clipped_by_year, water_mask_differences, bounds, aoi_minx, aoi_miny, aoi_maxx, aoi_maxy, red_transform_global
+
 
 @st.cache_data
 def generate_difference_image_overlays(water_mask_differences):
     image_colored_paths_by_diff = {}
     for diff_label, diff_mask in water_mask_differences.items():
-        # Define custom colors for differences
-        # Red: Lost water (-1)
-        # Blue: New water (1)
-        # Transparent: No change (0)
-        # Ensure mask is converted to float for transparency blending later if needed, or handle directly
-        colored_diff_array = np.zeros((*diff_mask.shape, 4), dtype=np.uint8) # RGBA
+
+        colored_diff_array = np.zeros((*diff_mask.shape, 4), dtype=np.uint8) 
 
         # Lost water (-1) -> Red
-        colored_diff_array[diff_mask == -1] = [255, 0, 0, 200] # Red with some transparency
+        colored_diff_array[diff_mask == -1] = [255, 0, 0, 200]
 
         # New water (1) -> Blue
-        colored_diff_array[diff_mask == 1] = [0, 0, 255, 200] # Blue with some transparency
+        colored_diff_array[diff_mask == 1] = [0, 0, 255, 200] 
 
         # No change (0) -> Transparent
-        colored_diff_array[diff_mask == 0] = [0, 0, 0, 0] # Fully transparent
+        colored_diff_array[diff_mask == 0] = [0, 0, 0, 0] 
 
         image = Image.fromarray(colored_diff_array, mode="RGBA")
 
         temp_file = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
         image.save(temp_file.name, format='PNG')
         image_colored_paths_by_diff[diff_label] = temp_file.name
-        st.write(f"Dodano warstwę dla różnicy: {diff_label}")
+
     return image_colored_paths_by_diff
 
 
+def compute_land_area_changes(diff_mask, transform, source_crs="EPSG:32616"):
+    geod = Geod(ellps="WGS84")
+    transformer = Transformer.from_crs(source_crs, "EPSG:4326", always_xy=True)
 
-# Streamlit UI
-#st.title("Detekcja Wody z Sentinel-1 RTC - Analiza Zmian")
+    results = {}
+
+    for value, label in [(-1, "lost_water"), (1, "new_water")]:
+        rows, cols = np.where(diff_mask == value)
+        total_area = 0.0
+
+        for row, col in zip(rows, cols):
+            x_left, y_top = transform * (col, row)
+            x_right, y_bottom = transform * (col + 1, row + 1)
+
+            lon_left, lat_top = transformer.transform(x_left, y_top)
+            lon_right, lat_bottom = transformer.transform(x_right, y_bottom)
+
+            lons = [lon_left, lon_right, lon_right, lon_left]
+            lats = [lat_top, lat_top, lat_bottom, lat_bottom]
+
+            if any(np.isnan(lons)) or any(np.isnan(lats)):
+                raise ValueError("NaN in transformed coordinates!")
+
+            area, _ = geod.polygon_area_perimeter(lons, lats)
+            total_area += abs(area)
+
+        count_pixels = len(rows)
+
+        results[label] = {
+            "area_m2": total_area,
+            "area_ha": total_area / 10_000,
+            "area_km2": total_area / 1_000_000,
+            "num_pixels": count_pixels
+        }
+
+    return results
+
+
+
+############################## STREAMLIT INTERFACE ##############################
+# --- KONFIGURACJA I DANE ---
 
 st.sidebar.header("Ustawienia Obszaru Zainteresowania (AOI)")
-default_lat = 53.87
-default_lon = -0.04
-
-from streamlit_folium import st_folium
-import folium.plugins
-
-st.sidebar.markdown("### 🌍 Przykładowe lokalizacje")
 
 locations = {
     "Luizjana (USA, delta Missisipi)": {"coords": (29.17, -89.31)},
     "Étretat (Francja, klify)": {"coords": (49.70, 0.19)},
+    "Jezioro Aralskie (Kazachstan / Uzbekistan)": {"coords": (59.436, 45.461)},
 }
 
-# Gotowe lokalizacje
 for name, info in locations.items():
-    with st.sidebar.expander(name):
-        lat, lon = info["coords"]
-        m = folium.Map(location=[lat, lon], zoom_start=8)
-        folium.Marker([lat, lon], tooltip=name).add_to(m)
-        st.components.v1.html(m._repr_html_(), height=200)
-        if st.button(f"📍 Ustaw lokalizację: {name}"):
-            st.session_state["latitude"] = lat
-            st.session_state["longitude"] = lon
+    lat, lon = info["coords"]
+    if st.sidebar.button(f"📍 {name}"):
+        st.session_state["latitude"] = lat
+        st.session_state["longitude"] = lon
+        st.session_state['map_ready'] = False  #reset mapy zmian po zmianie lokalizacji
 
-# Nowy tryb: samodzielny wybór z mapy
-with st.sidebar.expander("🖱️ Wybierz własny obszar z mapy"):
-    draw_map = folium.Map(location=[45, 0], zoom_start=3)
-    draw = folium.plugins.Draw(
-        draw_options={"rectangle": True, "polygon": False, "circle": False, "marker": False, "circlemarker": False},
-        edit_options={"edit": False}
-    )
-    draw.add_to(draw_map)
+draw_aoi_enabled = st.sidebar.checkbox("Rysuj AOI na mapie")
 
-    result = st_folium(draw_map, height=300, width=400)
-
-    if result and "last_active_drawing" in result and result["last_active_drawing"]:
-        geo = result["last_active_drawing"]["geometry"]
-        coords = geo["coordinates"][0]
-        lats = [c[1] for c in coords]
-        lons = [c[0] for c in coords]
-
-        # Środek zaznaczonego prostokąta
-        lat_center = np.mean(lats)
-        lon_center = np.mean(lons)
-
-        st.session_state["latitude"] = lat_center
-        st.session_state["longitude"] = lon_center
-
-        st.success(f"✅ Wybrano obszar: ({lat_center:.4f}, {lon_center:.4f})")
-
-#st.sidebar.header("🧭 Ustawienia Obszaru Zainteresowania (AOI)")
-
-# Domyślnie puste (jeśli nie ustawiono wcześniej)
 default_lat = st.session_state.get("latitude", "")
 default_lon = st.session_state.get("longitude", "")
 
-# Używamy text_input zamiast number_input, by umożliwić puste pola
 lat_input = st.sidebar.text_input("Szerokość geograficzna (Lat)", value=default_lat)
 lon_input = st.sidebar.text_input("Długość geograficzna (Lon)", value=default_lon)
 
-# Walidacja i konwersja do float
 try:
     latitude = float(lat_input)
     longitude = float(lon_input)
     cords_input = [latitude, longitude]
 except ValueError:
     cords_input = None
-    st.sidebar.warning("Proszę podać poprawne liczby dla szerokości i długości geograficznej.")
+    if lat_input or lon_input:
+        st.sidebar.warning("Proszę podać poprawne liczby dla szerokości i długości geograficznej.")
+
+if st.sidebar.button("Ustaw współrzędne AOI"):
+    if cords_input is not None:
+        st.session_state["latitude"] = latitude
+        st.session_state["longitude"] = longitude
+        st.session_state['map_ready'] = False  #reset mapy zmian po zmianie lokalizacji
+    else:
+        st.sidebar.error("Niepoprawne współrzędne. Proszę poprawić wpis.")
 
 
+# --- WYBÓR LAT DO ANALIZY ---
 st.sidebar.header("Wybór Lat")
 selected_years = st.sidebar.multiselect(
     "Wybierz lata do analizy zmian (min. 2 lata)",
     options=[2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024],
     default=[2016, 2021, 2023]
 )
+
 if 2022 in selected_years:
     st.sidebar.warning("Rok 2022 może zawierać anomalie w danych.")
 
+
+# --- GENEROWANIE MAPY ZMIAN ---
 if st.sidebar.button("Generuj mapę zmian"):
     if len(selected_years) < 2:
         st.error("Proszę wybrać co najmniej dwa lata, aby obliczyć zmiany.")
+    elif cords_input is None:
+        st.error("Proszę podać poprawne współrzędne AOI.")
     else:
         with st.spinner("Przetwarzanie danych satelitarnych i obliczanie zmian... To może potrwać kilka minut."):
-            water_mask_clipped_by_year, water_mask_differences, bounds, aoi_minx, aoi_miny, aoi_maxx, aoi_maxy = process_data_and_differences(cords_input, selected_years)
+            results = process_data_and_differences(cords_input, selected_years)
 
-            if water_mask_differences: # Check if any differences were calculated
+            if results:
+                water_mask_clipped_by_year, water_mask_differences, bounds, aoi_minx, aoi_miny, aoi_maxx, aoi_maxy, red_transform_global = results
+
                 image_colored_paths_by_diff = generate_difference_image_overlays(water_mask_differences)
+                
+                st.session_state['map_ready'] = True
+                st.session_state['image_paths'] = image_colored_paths_by_diff
+                st.session_state['aoi_bounds'] = (aoi_minx, aoi_miny, aoi_maxx, aoi_maxy)
+                st.session_state['red_transform'] = red_transform_global
+            else:
+                st.error("Nie udało się wygenerować mapy zmian.")
 
-                m = folium.Map(location=[(aoi_miny + aoi_maxy) / 2, (aoi_minx + aoi_maxx) / 2], zoom_start=12)
+#jeśli mapa została wygenerowana wczesniej to jest przechowywana w sesji i jest automatucznie wyświetlana
+if st.session_state.get('map_ready'):
+    aoi_minx, aoi_miny, aoi_maxx, aoi_maxy = st.session_state['aoi_bounds']
+    image_colored_paths_by_diff = st.session_state['image_paths']
 
-                for diff_label, img_path in image_colored_paths_by_diff.items():
-                    image_overlay = ImageOverlay(
-                        image=img_path,
-                        bounds=[[aoi_miny, aoi_minx], [aoi_maxy, aoi_maxx]],
-                        opacity=0.8, # Increase opacity for differences
-                        name=f"Zmiany: {diff_label}"
-                    )
-                    image_overlay.add_to(m)
+    # land_area_changes = compute_land_area_changes(water_mask_differences, red_transform_global)
+    # print(f"Zmiany powierzchni lądowej: {land_area_changes}")
 
-                folium.Polygon(
-                    locations=[(aoi_miny, aoi_minx), (aoi_miny, aoi_maxx), (aoi_maxy, aoi_maxx), (aoi_maxy, aoi_minx), (aoi_miny, aoi_minx)],
-                    color='blue',
-                    weight=2,
-                    fill=False,
-                    popup='Obszar Zainteresowania (AOI)'
-                ).add_to(m)
+    m = folium.Map(location=[(aoi_miny + aoi_maxy) / 2, (aoi_minx + aoi_maxx) / 2], zoom_start=12)
 
-                folium.LayerControl().add_to(m)
+    for diff_label, img_path in image_colored_paths_by_diff.items():
+        overlay = ImageOverlay(
+            image=img_path,
+            bounds=[[aoi_miny, aoi_minx], [aoi_maxy, aoi_maxx]],
+            opacity=0.8,
+            name=f"Zmiany: {diff_label}"
+        )
+        overlay.add_to(m)
 
-                map_html = m._repr_html_()
-                st.components.v1.html(map_html, height=700)
+    folium.Polygon(
+        locations=[(aoi_miny, aoi_minx), (aoi_miny, aoi_maxx), (aoi_maxy, aoi_maxx), (aoi_maxy, aoi_minx), (aoi_miny, aoi_minx)],
+        color='blue',
+        weight=2,
+        fill=False,
+        popup='Obszar Zainteresowania (AOI)'
+    ).add_to(m)
 
-                import zipfile
+    folium.LayerControl().add_to(m)
 
-                if image_colored_paths_by_diff:
-                    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
-                        with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
-                            for label, img_path in image_colored_paths_by_diff.items():
-                                arcname = f"{label}.png"
-                                zipf.write(img_path, arcname=arcname)
+    legend_html = """
+        <div style="
+            position: fixed; 
+            bottom: 5px; left: 5px; width: 150px; height: 85px; 
+            background-color: white;
+            border:2px solid grey; 
+            z-index:9999;
+            font-size:14px;
+            padding: 10px;
+        ">
+        <b>Legenda zmian</b><br>
+        <i style="background: rgba(255,0,0,0.78); width: 15px; height: 15px; display: inline-block;"></i>
+        Odsłonięty ląd<br>
+        <i style="background: rgba(0,0,255,0.78); width: 15px; height: 15px; display: inline-block;"></i>
+        Utracony ląd
+        </div>
+        """
+    m.get_root().html.add_child(folium.Element(legend_html))
 
-                    with open(tmp_zip.name, "rb") as f:
-                        with st.sidebar:  # <- UMIESZCZAMY PRZYCISK W SIDEBARZE
-                            st.markdown("---")
-                            st.subheader("📦 Eksport zmian wodnych")
-                            st.download_button(
-                                label="📥 Pobierz wszystkie obrazy zmian (ZIP)",
-                                data=f,
-                                file_name="zmiany_wodne.zip",
-                                mime="application/zip"
-                            )
+    st.components.v1.html(m._repr_html_(), height=700)
 
-                else:
-                    st.error(
-                        "Nie udało się wygenerować mapy zmian. Upewnij się, że wybrano co najmniej dwa lata i dane są dostępne dla wszystkich wybranych lat.")
+    if st.button("Wyczyść mapę zmian"):
+        st.session_state['map_ready'] = False
+        st.session_state.pop('image_paths', None)
+        st.session_state.pop('aoi_bounds', None)
+
+
+    #opcja eksportu obrazu w formie pliku zip
+    if image_colored_paths_by_diff:
+        import tempfile
+        import zipfile
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+            with zipfile.ZipFile(tmp_zip.name, 'w') as zipf:
+                for label, img_path in image_colored_paths_by_diff.items():
+                    arcname = f"{label}.png"
+                    zipf.write(img_path, arcname=arcname)
+
+        with open(tmp_zip.name, "rb") as f:
+            with st.sidebar:
+                st.markdown("---")
+                st.subheader("Eksport zmian wodnych")
+                st.download_button(
+                    label="Pobierz wszystkie obrazy zmian (ZIP)",
+                    data=f,
+                    file_name="zmiany_wodne.zip",
+                    mime="application/zip"
+                )
+if not st.session_state.get('map_ready', False):
+    default_location = [45, 0]
+    default_zoom = 2
+
+    if "latitude" in st.session_state and "longitude" in st.session_state:
+        center_lat = st.session_state["latitude"]
+        center_lon = st.session_state["longitude"]
+        zoom_level = 10
+    else:
+        center_lat, center_lon = default_location
+        zoom_level = default_zoom
+
+    m_base = folium.Map(location=[center_lat, center_lon], zoom_start=zoom_level)
+
+    for name, info in locations.items():
+        lat, lon = info["coords"]
+        folium.Marker(
+            location=[lat, lon],
+            tooltip=name,
+            icon=folium.Icon(color="green", icon="info-sign")
+        ).add_to(m_base)
+
+    if cords_input:
+        folium.CircleMarker(
+            location=cords_input,
+            radius=6,
+            color="blue",
+            fill=True,
+            fill_color="blue",
+            popup="Wybrane współrzędne"
+        ).add_to(m_base)
+
+    if draw_aoi_enabled:
+        draw = Draw(
+            draw_options={
+                "rectangle": True,
+                "polygon": False,
+                "circle": False,
+                "marker": False,
+                "circlemarker": False,
+            },
+            edit_options={"edit": False},
+        )
+        draw.add_to(m_base)
+
+    result = st_folium(m_base, height=700, width=1400)
+
+    #obsługa rysowania AOI przez użytkownika
+    if draw_aoi_enabled and result and "last_active_drawing" in result and result["last_active_drawing"]:
+        geo = result["last_active_drawing"]["geometry"]
+        coords = geo["coordinates"][0]
+        lats = [c[1] for c in coords]
+        lons = [c[0] for c in coords]
+
+        lat_center = np.mean(lats)
+        lon_center = np.mean(lons)
+
+        st.session_state["latitude"] = lat_center
+        st.session_state["longitude"] = lon_center
+
+        st.success(f"Wybrano obszar AOI: ({lat_center:.4f}, {lon_center:.4f})")
