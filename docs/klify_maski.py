@@ -453,7 +453,7 @@ if st.session_state.get('map_ready'):
     legend_html = """
         <div style="
             position: fixed; 
-            bottom: 5px; left: 5px; width: 150px; height: 85px; 
+            bottom: 30px; left: 30px; width: 180px; height: 85px; 
             background-color: white;
             border:2px solid grey; 
             z-index:9999;
@@ -466,10 +466,13 @@ if st.session_state.get('map_ready'):
         <i style="background: rgba(0,0,255,0.78); width: 15px; height: 15px; display: inline-block;"></i>
         Utracony ląd
         </div>
-        """
+    """
+
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    st.components.v1.html(m._repr_html_(), height=700)
+    full_map_html = m.get_root().render()
+    st.components.v1.html(full_map_html, height=700, scrolling=False)
+
 
     if st.button("Wyczyść mapę zmian"):
         st.session_state['map_ready'] = False
